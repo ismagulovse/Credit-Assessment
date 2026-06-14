@@ -52,6 +52,27 @@
     <h1>🏆 Кто на автомат?</h1>
     <p class="sub">Загрузи Excel-файл посещаемости — покажу, у кого автомат, кто допущен и кому сколько осталось.</p>
 
+    {{-- Источник 1: из журнала --}}
+    @if(!empty($subjects) && $subjects->isNotEmpty())
+        <div class="card" style="margin-bottom:16px;">
+            <h3 style="margin-bottom:10px;">📋 Посчитать из журнала</h3>
+            <form method="get" action="{{ route('attendance.index') }}" style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;">
+                <div style="flex:1; min-width:200px;">
+                    <label style="margin-top:0;">Предмет</label>
+                    <select name="subject">
+                        @foreach($subjects as $s)
+                            <option value="{{ $s->id }}" @selected(($subjectId ?? null) == $s->id)>{{ $s->name }}</option>
+                        @endforeach
+                    </select>
+                </div>
+                <button class="btn">🏆 Посчитать</button>
+            </form>
+        </div>
+
+        <div style="text-align:center; color:var(--muted-light); margin:14px 0; font-size:.85rem;">— или загрузите файл —</div>
+    @endif
+
+    {{-- Источник 2: загрузка Excel --}}
     <form method="post" action="{{ route('attendance.calculate') }}" enctype="multipart/form-data" id="form">
         @csrf
         <div class="upload" id="drop">

@@ -5,7 +5,6 @@ namespace App\Http\Controllers;
 use App\Enums\AttendanceStatus;
 use App\Models\Attendance;
 use App\Models\Group;
-use App\Models\Lesson;
 use App\Models\Subject;
 use Illuminate\Http\Request;
 
@@ -52,11 +51,17 @@ class SubjectController extends Controller
 
         $allGroups = Group::orderBy('name')->get();
 
-        // Карта отметок: [student_id][lesson_id] => Attendance
+        // Карта отметок: [student_id][lesson_id] => Attendance (для сетки в Blade)
         $marks = [];
+        // Плоская карта для JS режима «по занятию»: "studentId_lessonId" => {status, lab_number}
+        $marksJs = [];
         foreach ($subject->lessons as $lesson) {
             foreach ($lesson->attendances as $a) {
                 $marks[$a->student_id][$a->lesson_id] = $a;
+                $marksJs["{$a->student_id}_{$a->lesson_id}"] = [
+                    'status'     => $a->status->value,
+                    'lab_number' => $a->lab_number,
+                ];
             }
         }
 
@@ -64,6 +69,7 @@ class SubjectController extends Controller
             'subject'   => $subject,
             'allGroups' => $allGroups,
             'marks'     => $marks,
+            'marksJs'   => $marksJs,
             'statuses'  => AttendanceStatus::options(),
         ]);
     }
@@ -74,6 +80,12 @@ class SubjectController extends Controller
         $subject->delete();
 
         return redirect()->route('subjects.index')->with('status', "Предмет «$name» удалён.");
+    }
+
+    /** Выгрузка журнала предмета в Excel (сетка студенты×занятия). */
+    public function export(Subject $subject, \App\Services\JournalExporter $exporter)
+    {
+        return $exporter->download($subject);
     }
 
     /** Прикрепить группу к предмету. */
@@ -121,7 +133,7 @@ class SubjectController extends Controller
 
         $labNumber = $enum->isLabDone() ? ($data['lab_number'] ?? null) : null;
 
-        $att = Attendance::updateOrCreate(
+        Attendance::updateOrCreate(
             ['lesson_id' => $data['lesson_id'], 'student_id' => $data['student_id']],
             ['status' => $enum, 'lab_number' => $labNumber],
         );

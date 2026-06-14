@@ -35,6 +35,7 @@ Route::delete('/groups/{group}/students/{student}', [StudentController::class, '
 Route::get('/subjects', [SubjectController::class, 'index'])->name('subjects.index');
 Route::post('/subjects', [SubjectController::class, 'store'])->name('subjects.store');
 Route::get('/subjects/{subject}', [SubjectController::class, 'show'])->name('subjects.show');
+Route::get('/subjects/{subject}/export', [SubjectController::class, 'export'])->name('subjects.export');
 Route::delete('/subjects/{subject}', [SubjectController::class, 'destroy'])->name('subjects.destroy');
 Route::post('/subjects/{subject}/groups', [SubjectController::class, 'attachGroup'])->name('subjects.attachGroup');
 Route::delete('/subjects/{subject}/groups/{group}', [SubjectController::class, 'detachGroup'])->name('subjects.detachGroup');

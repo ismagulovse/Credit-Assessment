@@ -2,8 +2,10 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Subject;
 use App\Services\AttendanceCalculator;
 use App\Services\AttendanceParser;
+use App\Services\JournalResultAdapter;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 
@@ -14,10 +16,32 @@ class AttendanceController extends Controller
     ) {
     }
 
-    /** Страница загрузки файла. */
-    public function index()
+    /**
+     * Страница «Кто на автомат».
+     * Если передан ?subject=ID — считаем из журнала предмета.
+     * Иначе показываем форму загрузки Excel.
+     */
+    public function index(Request $request, JournalResultAdapter $adapter)
     {
-        return view('attendance.index');
+        $subjects = Subject::orderBy('name')->get();
+        $base = ['subjects' => $subjects, 'subjectId' => null];
+
+        if ($request->filled('subject')) {
+            $subject = Subject::find($request->integer('subject'));
+            if ($subject) {
+                $adapted = $adapter->adapt($subject);
+                $calc = new AttendanceCalculator($subject->requiredLabs());
+                $results = $calc->calculate($adapted);
+
+                session(['attendance_results' => array_map(fn ($r) => $r->toArray(), $results)]);
+
+                return view('attendance.index', array_merge($base, [
+                    'subjectId' => $subject->id,
+                ], $this->viewData($results)));
+            }
+        }
+
+        return view('attendance.index', $base);
     }
 
     /** Обработка загруженного файла → страница с результатами. */
