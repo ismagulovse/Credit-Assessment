@@ -160,6 +160,9 @@
 
         <div class="nav-group">
             <div class="title">Управление</div>
+            <a class="nav-link {{ request()->routeIs('subjects.*') || request()->routeIs('lessons.*') ? 'active' : '' }}" href="{{ route('subjects.index') }}">
+                <span class="ico">📋</span> Журнал
+            </a>
             <a class="nav-link {{ request()->routeIs('groups.*') ? 'active' : '' }}" href="{{ route('groups.index') }}">
                 <span class="ico">👥</span> Группы
             </a>

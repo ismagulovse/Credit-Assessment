@@ -74,6 +74,10 @@
             <div class="ic green">🧑‍🎓</div>
             <div><b>{{ $stats['students'] }}</b><span>студентов в базе</span></div>
         </div>
+        <div class="stat">
+            <div class="ic blue">📋</div>
+            <div><b>{{ $stats['subjects'] }}</b><span>предметов</span></div>
+        </div>
     </div>
 
     <div class="section-h">Разделы</div>
@@ -96,14 +100,13 @@
             <div class="go"><span class="btn btn-sm">Открыть →</span></div>
         </a>
 
-        {{-- Журнал (скоро) --}}
-        <div class="tile c-amber soon">
-            <span class="badge">Скоро</span>
+        {{-- Журнал --}}
+        <a href="{{ route('subjects.index') }}" class="tile c-amber">
             <div class="corner"></div>
             <div class="ti">📋</div>
             <h3>Журнал</h3>
             <p>Ведите занятия, отмечайте посещаемость и сдачу лаб прямо в системе. С выгрузкой в Excel.</p>
-            <div class="go"><span class="btn btn-sm btn-ghost">В разработке</span></div>
-        </div>
+            <div class="go"><span class="btn btn-sm">Открыть →</span></div>
+        </a>
     </div>
 @endsection

@@ -3,7 +3,9 @@
 use App\Http\Controllers\AttendanceController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\GroupController;
+use App\Http\Controllers\LessonController;
 use App\Http\Controllers\StudentController;
+use App\Http\Controllers\SubjectController;
 use Illuminate\Support\Facades\Route;
 
 // Дашборд (главная)
@@ -28,3 +30,16 @@ Route::post('/groups/{group}/students', [StudentController::class, 'store'])->na
 Route::post('/groups/{group}/students/bulk', [StudentController::class, 'storeBulk'])->name('students.storeBulk');
 Route::post('/groups/{group}/students/import', [StudentController::class, 'import'])->name('students.import');
 Route::delete('/groups/{group}/students/{student}', [StudentController::class, 'destroy'])->name('students.destroy');
+
+// Журнал — предметы
+Route::get('/subjects', [SubjectController::class, 'index'])->name('subjects.index');
+Route::post('/subjects', [SubjectController::class, 'store'])->name('subjects.store');
+Route::get('/subjects/{subject}', [SubjectController::class, 'show'])->name('subjects.show');
+Route::delete('/subjects/{subject}', [SubjectController::class, 'destroy'])->name('subjects.destroy');
+Route::post('/subjects/{subject}/groups', [SubjectController::class, 'attachGroup'])->name('subjects.attachGroup');
+Route::delete('/subjects/{subject}/groups/{group}', [SubjectController::class, 'detachGroup'])->name('subjects.detachGroup');
+Route::post('/subjects/{subject}/mark', [SubjectController::class, 'mark'])->name('subjects.mark');
+
+// Журнал — занятия
+Route::post('/subjects/{subject}/lessons', [LessonController::class, 'store'])->name('lessons.store');
+Route::delete('/subjects/{subject}/lessons/{lesson}', [LessonController::class, 'destroy'])->name('lessons.destroy');
