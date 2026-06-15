@@ -65,6 +65,10 @@ class AttendanceCalculator
         if (isset($scales[$groupName])) {
             return $scales[$groupName];
         }
+        // Общая шкала для всех групп (в файле не было подписей групп).
+        if (isset($scales['*'])) {
+            return $scales['*'];
+        }
         if (count($scales) === 1) {
             return reset($scales);
         }

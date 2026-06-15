@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
 use PhpOffice\PhpSpreadsheet\IOFactory;
 use PhpOffice\PhpSpreadsheet\Worksheet\Worksheet;
 
@@ -17,12 +18,21 @@ use PhpOffice\PhpSpreadsheet\Worksheet\Worksheet;
 class AttendanceParser
 {
     /**
+     * Первая колонка с данными занятий (AA = 27). Левее — служебные
+     * колонки (ФИО, подгруппа, статусные T..Z), их не сканируем на лабы.
+     */
+    private const FIRST_LESSON_COL = 27;
+
+    /**
      * @return array{groups: array<string, array>, totalLessons: int, gradeScales: array<string, array>}
      */
     public function parse(string $filePath, ?string $sheetName = null): array
     {
         $reader = IOFactory::createReaderForFile($filePath);
         $reader->setReadDataOnly(false); // нужны эмодзи/строки как есть
+        // Ограничиваем чтение, чтобы не упереться в память/край листа
+        // на файлах со служебными формульными столбцами у границы Excel.
+        $reader->setReadFilter(new ColumnLimitReadFilter(1024, 2000));
         $spreadsheet = $reader->load($filePath);
 
         $sheet = $sheetName
@@ -50,19 +60,43 @@ class AttendanceParser
 
     /**
      * Лист → [row => [colIndex => value]]. colIndex 1-based (A=1).
+     *
+     * Читаем только до последней колонки с реальными данными
+     * (getHighestDataColumn), а не до края листа — иначе на файлах со
+     * служебными формулами у самой границы Excel (колонка ~16384)
+     * итератор падает с "Invalid column index".
+     * Формульные ячейки (=SUM…) и #REF! пропускаем — это не данные журнала.
+     *
      * @return array<int, array<int, string>>
      */
     private function readGrid(Worksheet $sheet): array
     {
+        // Граница по колонкам: последняя колонка с данными, но не больше
+        // безопасного предела (служебные формулы могут уезжать к краю листа).
+        $maxCol = Coordinate::columnIndexFromString($sheet->getHighestDataColumn());
+        $maxCol = min($maxCol, 1024);
+        $maxRow = min($sheet->getHighestDataRow(), 2000);
+
         $grid = [];
-        foreach ($sheet->getRowIterator() as $row) {
-            $r = $row->getRowIndex();
-            $cellIt = $row->getCellIterator();
-            $cellIt->setIterateOnlyExistingCells(true);
-            foreach ($cellIt as $cell) {
-                $val = (string) $cell->getValue();
-                if ($val !== '') {
-                    $grid[$r][$cell->getColumn() === '' ? 0 : \PhpOffice\PhpSpreadsheet\Cell\Coordinate::columnIndexFromString($cell->getColumn())] = $val;
+        for ($r = 1; $r <= $maxRow; $r++) {
+            for ($c = 1; $c <= $maxCol; $c++) {
+                if (! $sheet->cellExists([$c, $r])) {
+                    continue;
+                }
+                $cell = $sheet->getCell([$c, $r]);
+
+                // Для формул берём КЭШИРОВАННОЕ значение из файла
+                // (без пересчёта — он может падать на #REF/служебных формулах).
+                // Так колонка-фамилия =MID(...) читается по результату,
+                // а битые служебные формулы дают пусто/#REF и отсеиваются.
+                if ($cell->isFormula()) {
+                    $val = (string) $cell->getOldCalculatedValue();
+                } else {
+                    $val = (string) $cell->getValue();
+                }
+
+                if ($val !== '' && ! str_contains($val, '#REF')) {
+                    $grid[$r][$c] = $val;
                 }
             }
         }
@@ -70,17 +104,28 @@ class AttendanceParser
     }
 
     /**
-     * Колонки-занятия определяем по строке 2: там тип занятия (ЛК / ЛБ ...).
-     * Возвращаем отсортированный список индексов колонок.
+     * Колонки-занятия для подсчёта ПОСЕЩАЕМОСТИ (знаменатель %).
+     * Колонка считается занятием, если в строке 2 есть тип (ЛК/ЛБ)
+     * ИЛИ в строке 3 есть дата (Excel-serial или строка с датой).
+     * Учитываем только колонки данных (>= AA = 27), чтобы не цеплять служебные.
      * @return int[]
      */
     private function detectLessonColumns(array $grid): array
     {
         $cols = [];
         $typeRow = $grid[2] ?? [];
-        foreach ($typeRow as $col => $val) {
-            // тип занятия начинается с "ЛК" или "ЛБ"
-            if (preg_match('/^\s*Л[КБ]/u', $val)) {
+        $dateRow = $grid[3] ?? [];
+
+        $candidates = array_unique(array_merge(array_keys($typeRow), array_keys($dateRow)));
+        foreach ($candidates as $col) {
+            if ($col < self::FIRST_LESSON_COL) {
+                continue;
+            }
+            $type = trim($typeRow[$col] ?? '');
+            $date = trim($dateRow[$col] ?? '');
+            $hasType = preg_match('/^\s*Л[КБ]/u', $type) === 1;
+            $hasDate = $date !== '' && (is_numeric($date) || preg_match('/\d{1,2}[.\/]\d{1,2}/', $date));
+            if ($hasType || $hasDate) {
                 $cols[] = $col;
             }
         }
@@ -109,8 +154,9 @@ class AttendanceParser
 
             // Заголовок группы: A есть, B пусто.
             if ($b === '') {
-                // Останавливаемся на служебных блоках (легенда эмодзи, "Оценки за экзамен").
-                if ($this->looksLikeServiceRow($a)) {
+                // Служебные строки (легенда, "Оценки за экзамен", шапка "ФИО",
+                // нижние заметки "1. Романов …") — не группа.
+                if ($this->looksLikeServiceRow($a) || ! $this->looksLikeGroupName($a)) {
                     $current = null;
                     continue;
                 }
@@ -137,7 +183,24 @@ class AttendanceParser
             ];
         }
 
-        return $groups;
+        // Отбрасываем «группы» без студентов (артефакты шапки/заметок).
+        return array_filter($groups, fn ($students) => count($students) > 0);
+    }
+
+    /**
+     * Похоже ли значение колонки A на название группы (а не на шапку/заметку).
+     * Отсекает «ФИО», нижние строки «1. Романов …» (начинаются с цифры).
+     */
+    private function looksLikeGroupName(string $a): bool
+    {
+        if (mb_strtolower($a) === 'фио') {
+            return false;
+        }
+        // Заметки вида "1. Романов ПИ Бек" начинаются с цифры.
+        if (preg_match('/^\s*\d/u', $a)) {
+            return false;
+        }
+        return true;
     }
 
     /**
@@ -161,26 +224,38 @@ class AttendanceParser
     }
 
     /**
-     * Считает уникальные номера сданных лаб (N перед ✅) и число посещений.
+     * Считает номера сданных лаб и число посещений по строке студента.
+     *
+     * ЛАБЫ ищем во ВСЕХ ячейках данных строки (>= FIRST_LESSON_COL), а не
+     * только в колонках-занятиях: в реальном файле часть лаб (N✅) стоит в
+     * столбцах, у которых не проставлен тип/дата в шапке — иначе они теряются.
+     *
+     * ПОСЕЩЕНИЯ считаем только по колонкам-занятиям ($lessonCols) — это
+     * корректный знаменатель для % посещаемости.
+     *
      * @return array{0:int[],1:int}
      */
     private function countLabsAndVisits(array $cells, array $lessonCols): array
     {
+        // Лабы — по всей строке данных.
         $labNumbers = [];
-        $visits = 0;
-
-        foreach ($lessonCols as $col) {
-            $val = trim($cells[$col] ?? '');
-            if ($val === '' || str_contains($val, '#REF')) {
+        foreach ($cells as $col => $val) {
+            if ($col < self::FIRST_LESSON_COL) {
                 continue;
             }
-            $visits++;
-
-            // Все вхождения "<число>✅" → номера сданных лаб.
-            if (preg_match_all('/(\d+)\x{2705}/u', $val, $m)) {
+            if (preg_match_all('/(\d+)\x{2705}/u', (string) $val, $m)) {
                 foreach ($m[1] as $num) {
                     $labNumbers[(int) $num] = true;
                 }
+            }
+        }
+
+        // Посещения — только по колонкам-занятиям.
+        $visits = 0;
+        foreach ($lessonCols as $col) {
+            $val = trim($cells[$col] ?? '');
+            if ($val !== '') {
+                $visits++;
             }
         }
 
@@ -211,32 +286,64 @@ class AttendanceParser
             return [];
         }
 
-        // 2. Имена групп — непустые ячейки той же строки, кроме самой надписи.
+        // 2. Имена групп над колонками шкал. Имя группы валидно, только если
+        //    оно НЕ является само строкой шкалы ("N лаб - Оценка").
+        //    Если подписей групп нет — шкала общая для всех групп.
+        $isRule = fn (string $v) => preg_match('/^\s*\d+\s*[Лл]аб[^-]*-/u', $v) === 1;
+
         $groupCols = [];
         foreach (($grid[$headerRow] ?? []) as $col => $val) {
             $val = trim($val);
             if ($val === '' || str_contains(mb_strtolower($val), 'оценки за экзамен') || str_contains($val, '#REF')) {
                 continue;
             }
+            if ($isRule($val)) {
+                continue; // это уже строка шкалы, а не имя группы
+            }
             $groupCols[$col] = $val; // col => имя группы
         }
 
-        // 3. Ниже заголовка читаем строки "N лаб - Оценка" по каждой колонке.
-        $scales = [];
-        foreach ($groupCols as $col => $groupName) {
+        // Хелпер: собрать правила шкалы из колонки $col ниже заголовка.
+        $readRules = function (int $col) use ($grid, $headerRow): array {
             $rules = [];
-            for ($r = $headerRow + 1; $r <= $headerRow + 12; $r++) {
+            for ($r = $headerRow; $r <= $headerRow + 12; $r++) {
                 $val = trim($grid[$r][$col] ?? '');
-                if ($val === '') {
-                    continue;
-                }
                 if (preg_match('/^\s*(\d+)\s*[Лл]аб[^-]*-\s*(.+)$/u', $val, $m)) {
                     $rules[] = ['labs' => (int) $m[1], 'grade' => trim($m[2])];
                 }
             }
-            if ($rules) {
-                usort($rules, fn ($x, $y) => $x['labs'] <=> $y['labs']);
-                $scales[$groupName] = $rules;
+            usort($rules, fn ($x, $y) => $x['labs'] <=> $y['labs']);
+            return $rules;
+        };
+
+        $scales = [];
+
+        if ($groupCols) {
+            // 3а. Шкалы по группам.
+            foreach ($groupCols as $col => $groupName) {
+                $rules = $readRules($col);
+                if ($rules) {
+                    $scales[$groupName] = $rules;
+                }
+            }
+        } else {
+            // 3б. Подписей групп нет → одна общая шкала.
+            // Берём первую колонку (>= FIRST_LESSON_COL не требуется — блок слева),
+            // где под заголовком есть строки "N лаб - Оценка".
+            $candidateCols = [];
+            for ($r = $headerRow; $r <= $headerRow + 12; $r++) {
+                foreach (($grid[$r] ?? []) as $col => $val) {
+                    if ($isRule(trim($val))) {
+                        $candidateCols[$col] = true;
+                    }
+                }
+            }
+            foreach (array_keys($candidateCols) as $col) {
+                $rules = $readRules($col);
+                if ($rules) {
+                    $scales['*'] = $rules; // '*' = общая шкала для всех групп
+                    break;
+                }
             }
         }
 
